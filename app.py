@@ -4,6 +4,7 @@ import json
 import os
 from io import BytesIO
 from md2pdf.core import md2pdf
+import random
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", None)
 
@@ -24,16 +25,10 @@ class GenerationStatistics:
         self.model_name = model_name
 
     def get_input_speed(self):
-        if self.input_time != 0:
-            return self.input_tokens / self.input_time
-        else:
-            return 0
+        return self.input_tokens / self.input_time if self.input_time != 0 else 0
     
     def get_output_speed(self):
-        if self.output_time != 0:
-            return self.output_tokens / self.output_time
-        else:
-            return 0
+        return self.output_tokens / self.output_time if self.output_time != 0 else 0
     
     def add(self, other):
         if not isinstance(other, GenerationStatistics):
@@ -54,65 +49,36 @@ class GenerationStatistics:
                 f"| Inference Time (s) | {self.input_time:.2f}            | {self.output_time:.2f}            | {self.total_time:.2f}            |")
 
 class Story:
-    def __init__(self, structure):
+    def __init__(self, structure, characters, setting):
         self.structure = structure
-        self.contents = {title: "" for title in self.flatten_structure(structure)}
-        self.placeholders = {title: st.empty() for title in self.flatten_structure(structure)}
+        self.characters = characters
+        self.setting = setting
+        self.contents = {f"Chapter {i+1}": "" for i in range(len(structure) - 1)}  # -1 to exclude 'title'
+        self.placeholders = {f"Chapter {i+1}": st.empty() for i in range(len(structure) - 1)}
 
-        st.markdown("## Generating the following story structure:")
-        toc_columns = st.columns(4)
-        self.display_toc(self.structure, toc_columns)
+        st.markdown("## Novel Structure:")
+        for i, (chapter, summary) in enumerate(structure.items()):
+            if chapter != 'title':
+                st.markdown(f"### Chapter {i}: {summary}")
         st.markdown("---")
 
-    def flatten_structure(self, structure):
-        sections = []
-        for title, content in structure.items():
-            sections.append(title)
-            if isinstance(content, dict):
-                sections.extend(self.flatten_structure(content))
-        return sections
+    def update_content(self, chapter, new_content):
+        self.contents[chapter] += new_content
+        self.display_content(chapter)
 
-    def update_content(self, title, new_content):
-        try:
-            self.contents[title] += new_content
-            self.display_content(title)
-        except TypeError as e:
-            pass
+    def display_content(self, chapter):
+        if self.contents[chapter].strip():
+            self.placeholders[chapter].markdown(f"## {chapter}\n{self.contents[chapter]}")
 
-    def display_content(self, title):
-        if self.contents[title].strip():
-            self.placeholders[title].markdown(f"## {title}\n{self.contents[title]}")
-
-    def display_structure(self, structure=None, level=1):
-        if structure is None:
-            structure = self.structure
-        
-        for title, content in structure.items():
-            if self.contents[title].strip():
-                st.markdown(f"{'#' * level} {title}")
-                self.placeholders[title].markdown(self.contents[title])
-            if isinstance(content, dict):
-                self.display_structure(content, level + 1)
-
-    def display_toc(self, structure, columns, level=1, col_index=0):
-        for title, content in structure.items():
-            with columns[col_index % len(columns)]:
-                st.markdown(f"{' ' * (level-1) * 2}- {title}")
-            col_index += 1
-            if isinstance(content, dict):
-                col_index = self.display_toc(content, columns, level + 1, col_index)
-        return col_index
-
-    def get_markdown_content(self, structure=None, level=1):
-        if structure is None:
-            structure = self.structure
-        
-        markdown_content = ""
-        for title, content in structure.items():
-            if self.contents[title].strip():
-                markdown_content += f"{'#' * level} {title}\n{self.contents[title]}\n\n"
-            if isinstance(content, dict):
-                markdown_content += self.get_markdown_content(content, level + 1)
+    def get_markdown_content(self):
+        markdown_content = f"# {self.structure['title']}\n\n"
+        markdown_content += f"## Setting\n{self.setting}\n\n"
+        markdown_content += "## Main Characters\n"
+        for char in self.characters:
+            markdown_content += f"- {char['name']}: {char['description']}\n"
+        markdown_content += "\n"
+        for chapter, content in self.contents.items():
+            markdown_content += f"## {chapter}\n{content}\n\n"
         return markdown_content
 
 def create_markdown_file(content: str) -> BytesIO:
@@ -127,50 +93,51 @@ def create_pdf_file(content: str):
     pdf_buffer.seek(0)
     return pdf_buffer
 
-def generate_story_structure(prompt: str, genre: str, theme: str):
+def generate_story_structure(title: str, genre: str, theme: str, num_chapters: int):
     completion = st.session_state.groq.chat.completions.create(
         model="llama3-70b-8192",
         messages=[
             {
                 "role": "system",
-                "content": "Write in JSON format:\n\n{\"Title of section goes here\":\"Description of section goes here\",\n\"Title of section goes here\":{\"Title of section goes here\":\"Description of section goes here\",\"Title of section goes here\":\"Description of section goes here\",\"Title of section goes here\":\"Description of section goes here\"}}"
+                "content": "Generate a novel structure with chapter summaries."
             },
             {
                 "role": "user",
-                "content": f"Write a comprehensive structure for a short story or novella based on the following:\n\nPrompt: {prompt}\nGenre: {genre}\nTheme: {theme}\n\nInclude sections for introduction, rising action, climax, falling action, and conclusion."
+                "content": f"Create a {num_chapters}-chapter novel structure for a {genre} story titled '{title}' with the theme of '{theme}'. Provide a brief summary for each chapter. Return the result as a JSON object where each key is a chapter number (except for the 'title' key) and the value is the chapter summary."
             }
         ],
         temperature=0.7,
         max_tokens=8000,
         top_p=1,
         stream=False,
-        response_format={"type": "json_object"},
-        stop=None,
     )
 
     usage = completion.usage
-    statistics_to_return = GenerationStatistics(input_time=usage.prompt_time, output_time=usage.completion_time, input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens, total_time=usage.total_time, model_name="llama3-70b-8192")
+    statistics = GenerationStatistics(input_time=usage.prompt_time, output_time=usage.completion_time, 
+                                      input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens, 
+                                      total_time=usage.total_time, model_name="llama3-70b-8192")
 
-    return statistics_to_return, completion.choices[0].message.content
+    structure = json.loads(completion.choices[0].message.content)
+    structure['title'] = title
+    return statistics, structure
 
-def generate_section(prompt: str, genre: str, theme: str):
+def generate_chapter(chapter_title: str, chapter_summary: str, characters: list, setting: str, style: str):
     stream = st.session_state.groq.chat.completions.create(
         model="llama3-8b-8192",
         messages=[
             {
                 "role": "system",
-                "content": f"You are an expert writer crafting a story in the {genre} genre with the theme of {theme}. Generate a detailed, engaging section for the story."
+                "content": f"You are an expert novelist writing in a {style} style. Generate an engaging chapter based on the provided information."
             },
             {
                 "role": "user",
-                "content": f"Write a detailed and engaging section for the following part of the story:\n\n<section_title>{prompt}</section_title>"
+                "content": f"Write a detailed chapter for a novel with the following information:\nTitle: {chapter_title}\nSummary: {chapter_summary}\nCharacters: {', '.join([c['name'] for c in characters])}\nSetting: {setting}\n\nInclude character interactions and dialogue where appropriate."
             }
         ],
         temperature=0.7,
         max_tokens=8000,
         top_p=1,
         stream=True,
-        stop=None,
     )
 
     for chunk in stream:
@@ -181,130 +148,105 @@ def generate_section(prompt: str, genre: str, theme: str):
             if not x_groq.usage:
                 continue
             usage = x_groq.usage
-            statistics_to_return = GenerationStatistics(input_time=usage.prompt_time, output_time=usage.completion_time, input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens, total_time=usage.total_time, model_name="llama3-8b-8192")
-            yield statistics_to_return
+            statistics = GenerationStatistics(input_time=usage.prompt_time, output_time=usage.completion_time,
+                                              input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens,
+                                              total_time=usage.total_time, model_name="llama3-8b-8192")
+            yield statistics
 
-# Initialize
-if 'button_disabled' not in st.session_state:
-    st.session_state.button_disabled = False
+def generate_character():
+    names = ["Alice", "Bob", "Charlie", "Diana", "Ethan", "Fiona", "George", "Hannah"]
+    backgrounds = ["mysterious past", "wealthy upbringing", "humble beginnings", "tragic childhood"]
+    traits = ["brave", "intelligent", "cunning", "compassionate", "ambitious", "reserved"]
+    
+    return {
+        "name": random.choice(names),
+        "description": f"A {random.choice(traits)} individual with a {random.choice(backgrounds)}."
+    }
 
-if 'button_text' not in st.session_state:
-    st.session_state.button_text = "Generate Story"
+# Streamlit UI
+st.title("Novel-Style Story Generator")
 
-if 'statistics_text' not in st.session_state:
-    st.session_state.statistics_text = ""
+with st.sidebar:
+    if not GROQ_API_KEY:
+        groq_input_key = st.text_input("Enter your Groq API Key (gsk_yA...):", "", type="password")
 
-st.write("""
-# Story Generator: Create short stories or novellas using llama3 (8b and 70b) on Groq
-""")
+    story_title = st.text_input("Enter a title for your story:", "")
+    genre = st.selectbox("Select a genre:", ["Science Fiction", "Fantasy", "Mystery", "Romance", "Horror", "Thriller", "Historical Fiction", "Comedy"])
+    theme = st.text_input("Enter a theme for your story:", "")
+    num_chapters = st.slider("Number of chapters:", 3, 20, 10)
+    writing_style = st.selectbox("Select a writing style:", ["Descriptive", "Concise", "Poetic", "Humorous"])
 
-def disable():
-    st.session_state.button_disabled = True
-
-def enable():
-    st.session_state.button_disabled = False
-
-def empty_st():
-    st.empty()
-
-try:
-    if st.button('End Generation and Download Story'):
-        if "story" in st.session_state:
-            # Create markdown file
-            markdown_file = create_markdown_file(st.session_state.story.get_markdown_content())
-            st.download_button(
-                label='Download Text',
-                data=markdown_file,
-                file_name='generated_story.txt',
-                mime='text/plain'
-            )
-
-            # Create pdf file (styled)
-            pdf_file = create_pdf_file(st.session_state.story.get_markdown_content())
-            st.download_button(
-                label='Download PDF',
-                data=pdf_file,
-                file_name='generated_story.pdf',
-                mime='application/pdf'
-            )
+    st.subheader("Characters")
+    num_characters = st.number_input("Number of characters:", 1, 5, 2)
+    characters = []
+    for i in range(num_characters):
+        st.markdown(f"### Character {i+1}")
+        if st.button(f"Generate Random Character {i+1}"):
+            characters.append(generate_character())
         else:
-            raise ValueError("Please generate content first before downloading the story.")
+            name = st.text_input(f"Name for Character {i+1}:", key=f"char_name_{i}")
+            description = st.text_area(f"Description for Character {i+1}:", key=f"char_desc_{i}")
+            if name and description:
+                characters.append({"name": name, "description": description})
 
-    with st.form("groqform"):
-        if not GROQ_API_KEY:
-            groq_input_key = st.text_input("Enter your Groq API Key (gsk_yA...):", "", type="password")
+    setting = st.text_area("Describe the story's setting:")
 
-        prompt_text = st.text_input("Enter a prompt for your story:", "")
-        genre = st.selectbox("Select a genre:", ["Science Fiction", "Fantasy", "Mystery", "Romance", "Horror", "Thriller", "Historical Fiction", "Comedy"])
-        theme = st.text_input("Enter a theme for your story:", "")
+    generate_button = st.button("Generate Novel")
 
-        # Generate button
-        submitted = st.form_submit_button(st.session_state.button_text, on_click=disable, disabled=st.session_state.button_disabled)
-        
-        # Statistics
-        placeholder = st.empty()
-        def display_statistics():
-            with placeholder.container():
-                if st.session_state.statistics_text:
-                    if "Generating structure in background" not in st.session_state.statistics_text:
-                        st.markdown(st.session_state.statistics_text+"\n\n---\n")
-                    else:
-                        st.markdown(st.session_state.statistics_text)
-                else:
-                    placeholder.empty()
+# Main content area
+if 'story' in st.session_state:
+    story = st.session_state.story
+    st.markdown(f"# {story.structure['title']}")
+    st.markdown(f"## Setting\n{story.setting}")
+    st.markdown("## Main Characters")
+    for char in story.characters:
+        st.markdown(f"- **{char['name']}**: {char['description']}")
 
-        if submitted:
-            if len(prompt_text) < 10 or len(theme) < 5:
-                raise ValueError("Story prompt must be at least 10 characters long and theme must be at least 5 characters long")
+    progress_bar = st.progress(0)
+    for i, (chapter, content) in enumerate(story.contents.items()):
+        story.display_content(chapter)
+        progress_bar.progress((i + 1) / len(story.contents))
 
-            st.session_state.button_disabled = True
-            st.session_state.statistics_text = "Generating structure in background...."
-            display_statistics()
+    if st.button('Download Novel'):
+        markdown_file = create_markdown_file(story.get_markdown_content())
+        st.download_button(
+            label='Download as Markdown',
+            data=markdown_file,
+            file_name='generated_novel.md',
+            mime='text/markdown'
+        )
 
-            if not GROQ_API_KEY:
-                st.session_state.groq = Groq(api_key=groq_input_key)
+        pdf_file = create_pdf_file(story.get_markdown_content())
+        st.download_button(
+            label='Download as PDF',
+            data=pdf_file,
+            file_name='generated_novel.pdf',
+            mime='application/pdf'
+        )
 
-            large_model_generation_statistics, story_structure = generate_story_structure(prompt_text, genre, theme)
+elif generate_button:
+    if not story_title or not theme or not setting or len(characters) == 0:
+        st.error("Please fill in all required fields (title, theme, setting, and at least one character).")
+    else:
+        with st.spinner("Generating novel structure..."):
+            structure_stats, structure = generate_story_structure(story_title, genre, theme, num_chapters)
+            story = Story(structure, characters, setting)
+            st.session_state.story = story
 
-            total_generation_statistics = GenerationStatistics(model_name="llama3-8b-8192")
+        total_stats = GenerationStatistics()
 
-            try:
-                story_structure_json = json.loads(story_structure)
-                story = Story(story_structure_json)
-                
-                if 'story' not in st.session_state:
-                    st.session_state.story = story
+        for i, (chapter, summary) in enumerate(structure.items()):
+            if chapter != 'title':
+                with st.spinner(f"Generating Chapter {i}..."):
+                    content_stream = generate_chapter(f"Chapter {i}", summary, characters, setting, writing_style)
+                    for chunk in content_stream:
+                        if isinstance(chunk, GenerationStatistics):
+                            total_stats.add(chunk)
+                        else:
+                            story.update_content(f"Chapter {i}", chunk)
 
-                print(json.dumps(story_structure_json, indent=2))
+        st.success("Novel generation complete!")
+        st.markdown(str(total_stats))
 
-                st.session_state.story.display_structure()
-
-                def stream_section_content(sections):
-                    for title, content in sections.items():
-                        if isinstance(content, str):
-                            content_stream = generate_section(title+": "+content, genre, theme)
-                            for chunk in content_stream:
-                                chunk_data = chunk
-                                if (type(chunk_data) == GenerationStatistics):
-                                    total_generation_statistics.add(chunk_data)
-                                    
-                                    st.session_state.statistics_text = str(total_generation_statistics)
-                                    display_statistics()
-                                elif chunk != None:
-                                    st.session_state.story.update_content(title, chunk)
-                        elif isinstance(content, dict):
-                            stream_section_content(content)
-
-                stream_section_content(story_structure_json)
-            
-            except json.JSONDecodeError:
-                st.error("Failed to decode the story structure. Please try again.")
-
-            enable()
-
-except Exception as e:
-    st.session_state.button_disabled = False
-    st.error(e)
-
-    if st.button("Clear"):
-        st.rerun()
+else:
+    st.write("Fill in the details in the sidebar and click 'Generate Novel' to create your story.")
