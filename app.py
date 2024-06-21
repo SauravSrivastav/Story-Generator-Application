@@ -95,67 +95,83 @@ def generate_story_structure(title: str, genre: str, theme: str, num_chapters: i
     if not st.session_state.groq:
         raise ValueError("Groq client is not initialized. Please enter a valid API key.")
     
-    completion = st.session_state.groq.chat.completions.create(
-        model="llama3-70b-8192",
-        messages=[
-            {
-                "role": "system",
-                "content": "Generate a novel structure with chapter summaries."
-            },
-            {
-                "role": "user",
-                "content": f"Create a {num_chapters}-chapter novel structure for a {genre} story titled '{title}' with the theme of '{theme}'. Provide a brief summary for each chapter. Return the result as a JSON object where each key is a chapter number (except for the 'title' key) and the value is the chapter summary."
-            }
-        ],
-        temperature=0.7,
-        max_tokens=8000,
-        top_p=1,
-        stream=False,
-    )
+    try:
+        completion = st.session_state.groq.chat.completions.create(
+            model="llama3-70b-8192",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Generate a novel structure with chapter summaries."
+                },
+                {
+                    "role": "user",
+                    "content": f"Create a {num_chapters}-chapter novel structure for a {genre} story titled '{title}' with the theme of '{theme}'. Provide a brief summary for each chapter. Return the result as a JSON object where each key is a chapter number (except for the 'title' key) and the value is the chapter summary."
+                }
+            ],
+            temperature=0.7,
+            max_tokens=8000,
+            top_p=1,
+            stream=False,
+        )
 
-    usage = completion.usage
-    statistics = GenerationStatistics(input_time=usage.prompt_time, output_time=usage.completion_time, 
-                                      input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens, 
-                                      total_time=usage.total_time, model_name="llama3-70b-8192")
+        usage = completion.usage
+        statistics = GenerationStatistics(input_time=usage.prompt_time, output_time=usage.completion_time, 
+                                          input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens, 
+                                          total_time=usage.total_time, model_name="llama3-70b-8192")
 
-    structure = json.loads(completion.choices[0].message.content)
-    structure['title'] = title
-    return statistics, structure
+        # Parse the JSON response
+        try:
+            structure = json.loads(completion.choices[0].message.content)
+        except json.JSONDecodeError as e:
+            st.error(f"Error parsing JSON response: {str(e)}")
+            st.error("Raw response content:")
+            st.code(completion.choices[0].message.content)
+            raise ValueError("Failed to parse the story structure from the API response.")
+
+        structure['title'] = title
+        return statistics, structure
+    except Exception as e:
+        st.error(f"An error occurred while generating the story structure: {str(e)}")
+        raise
 
 def generate_chapter(chapter_title: str, chapter_summary: str, characters: list, setting: str, style: str):
     if not st.session_state.groq:
         raise ValueError("Groq client is not initialized. Please enter a valid API key.")
     
-    stream = st.session_state.groq.chat.completions.create(
-        model="llama3-8b-8192",
-        messages=[
-            {
-                "role": "system",
-                "content": f"You are an expert novelist writing in a {style} style. Generate an engaging chapter based on the provided information."
-            },
-            {
-                "role": "user",
-                "content": f"Write a detailed chapter for a novel with the following information:\nTitle: {chapter_title}\nSummary: {chapter_summary}\nCharacters: {', '.join([c['name'] for c in characters])}\nSetting: {setting}\n\nInclude character interactions and dialogue where appropriate."
-            }
-        ],
-        temperature=0.7,
-        max_tokens=8000,
-        top_p=1,
-        stream=True,
-    )
+    try:
+        stream = st.session_state.groq.chat.completions.create(
+            model="llama3-8b-8192",
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"You are an expert novelist writing in a {style} style. Generate an engaging chapter based on the provided information."
+                },
+                {
+                    "role": "user",
+                    "content": f"Write a detailed chapter for a novel with the following information:\nTitle: {chapter_title}\nSummary: {chapter_summary}\nCharacters: {', '.join([c['name'] for c in characters])}\nSetting: {setting}\n\nInclude character interactions and dialogue where appropriate."
+                }
+            ],
+            temperature=0.7,
+            max_tokens=8000,
+            top_p=1,
+            stream=True,
+        )
 
-    for chunk in stream:
-        tokens = chunk.choices[0].delta.content
-        if tokens:
-            yield tokens
-        if x_groq := chunk.x_groq:
-            if not x_groq.usage:
-                continue
-            usage = x_groq.usage
-            statistics = GenerationStatistics(input_time=usage.prompt_time, output_time=usage.completion_time,
-                                              input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens,
-                                              total_time=usage.total_time, model_name="llama3-8b-8192")
-            yield statistics
+        for chunk in stream:
+            tokens = chunk.choices[0].delta.content
+            if tokens:
+                yield tokens
+            if x_groq := chunk.x_groq:
+                if not x_groq.usage:
+                    continue
+                usage = x_groq.usage
+                statistics = GenerationStatistics(input_time=usage.prompt_time, output_time=usage.completion_time,
+                                                  input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens,
+                                                  total_time=usage.total_time, model_name="llama3-8b-8192")
+                yield statistics
+    except Exception as e:
+        st.error(f"An error occurred while generating the chapter: {str(e)}")
+        raise
 
 def generate_character():
     names = ["Alice", "Bob", "Charlie", "Diana", "Ethan", "Fiona", "George", "Hannah"]
@@ -246,8 +262,8 @@ elif generate_button:
     elif not story_title or not theme or not setting or len(characters) == 0:
         st.error("Please fill in all required fields (title, theme, setting, and at least one character).")
     else:
-        with st.spinner("Generating novel structure..."):
-            try:
+        try:
+            with st.spinner("Generating novel structure..."):
                 structure_stats, structure = generate_story_structure(story_title, genre, theme, num_chapters)
                 story = Story(structure, characters, setting)
                 st.session_state.story = story
@@ -266,8 +282,9 @@ elif generate_button:
 
                 st.success("Novel generation complete!")
                 st.markdown(str(total_stats))
-            except Exception as e:
-                st.error(f"An error occurred during novel generation: {str(e)}")
+        except Exception as e:
+            st.error(f"An error occurred during novel generation: {str(e)}")
+            st.error("Please try again or check your inputs.")
 
 else:
     st.write("Fill in the details in the sidebar and click 'Generate Novel' to create your story.")
